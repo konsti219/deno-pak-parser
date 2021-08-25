@@ -20,20 +20,47 @@ export class PakRecord {
 
     constructor(
         public fileName: string,
-        private offset: bigint,
-        private size: bigint,
-        public sizeDecompressed: bigint,
-        private compressionMethod: CompressionMethod,
-        private compressionBlocks: Block[] = [],
-        private compressionBlockSize: number,
-        private hash: Uint8Array,
-        private isEncrypted: boolean,
+        public offset: bigint,
         private reader: BinaryReader
     ) { }
 
-    async read() {
-        await this.reader.seek(this.offset)
-        return await readRecordHeader(this.reader)
+    async readHeader() {
+        await this.reader.seek(this.offset + 8n)
+
+        const size = await this.reader.getBigUint64(true)
+        const sizeDecompressed = await this.reader.getBigUint64(true)
+
+        const compressionMethod: CompressionMethod = await this.reader.getUint32(true)
+
+        // sha1 hash
+        const hash = await this.reader.getBytes(20)
+
+        // read compression data
+        const compressionBlocks: Block[] = []
+        if (compressionMethod != CompressionMethod.NONE) {
+            const blockCount = await this.reader.getUint32(true)
+            for (let j = 0; j < blockCount; j++) {
+                const startOffset = await this.reader.getBigUint64(true)
+                const endOffset = await this.reader.getBigUint64(true)
+                compressionBlocks.push({
+                    start: startOffset,
+                    size: endOffset - startOffset
+                })
+            }
+        }
+
+        const isEncrypted = !!(await this.reader.getUint8())
+        const blockSize = await this.reader.getUint32(true)
+
+        return {
+            size,
+            sizeDecompressed,
+            compressionMethod,
+            compressionBlocks,
+            blockSize,
+            isEncrypted,
+            hash
+        }
     }
 }
 
@@ -84,68 +111,30 @@ export class PakFile {
             const nameLength = await r.getUint32(true)
             const fileName = (await r.getString(nameLength)).slice(0, -1)
 
-            const { offset, size, sizeDecompressed, compressionMethod, compressionBlocks, blockSize, hash, isEncrypted } = await readRecordHeader(r)
+            const offset = await r.getBigUint64(true)
 
-            //console.log(`Found record ${fileName} at offset ${offset}, size: ${size}, size dec: ${sizeDecompressed}`)
+            // seek over unimportant size
+            await r.seek(16, true)
+
+            // we need this here because it tells us if compression blocks are included
+            const compressionMethod: CompressionMethod = await this.reader.getUint32(true)
+
+            // seek over hash
+            await r.seek(20, true)
+
+            // skip compression data
+            if (compressionMethod != CompressionMethod.NONE) {
+                const blockCount = await this.reader.getUint32(true)
+                await r.seek(blockCount * 16, true)
+            }
+
+            // seek over blocksize and isEncrypted byte
+            await r.seek(5, true)
+
+            // console.log(`Found record ${fileName} at offset ${offset}, compression: ${compressionMethod}`)
 
             // add to dict
-            this.records[fileName] = new PakRecord(fileName, offset, size, sizeDecompressed, compressionMethod, compressionBlocks, blockSize, hash, isEncrypted, r)
+            this.records[fileName] = new PakRecord(fileName, offset, r)
         }
-
-        for (const fileName in this.records) {
-            const rec = this.records[fileName]
-            console.log(rec)
-
-            console.log(await rec.read())
-        }
-    }
-
-    readFromFile(path: string) {
-        return
-    }
-
-    writeToFile(path: string) {
-        return
     }
 }
-
-async function readRecordHeader(reader: BinaryReader) {
-    const offset = await reader.getBigUint64(true)
-
-    const size = await reader.getBigUint64(true)
-    const sizeDecompressed = await reader.getBigUint64(true)
-
-    const compressionMethod: CompressionMethod = await reader.getUint32(true)
-
-    // sha1 hash
-    const hash = await reader.getBytes(20)
-
-    // read compression data
-    const compressionBlocks: Block[] = []
-    if (compressionMethod != CompressionMethod.NONE) {
-        const blockCount = await reader.getUint32(true)
-        for (let j = 0; j < blockCount; j++) {
-            const startOffset = await reader.getBigUint64(true)
-            const endOffset = await reader.getBigUint64(true)
-            compressionBlocks.push({
-                start: startOffset,
-                size: endOffset - startOffset
-            })
-        }
-    }
-
-    const isEncrypted = !!(await reader.getUint8())
-    const blockSize = await reader.getUint32(true)
-
-    return {
-        offset,
-        size,
-        sizeDecompressed,
-        compressionMethod,
-        compressionBlocks,
-        blockSize,
-        isEncrypted,
-        hash
-    }
-}
-
