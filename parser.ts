@@ -62,6 +62,33 @@ export class PakRecord {
             hash
         }
     }
+
+    async readData() {
+        const { size, sizeDecompressed, compressionMethod, compressionBlocks, blockSize } = await this.readHeader()
+        switch (compressionMethod) {
+            case CompressionMethod.NONE: {
+                return await this.reader.getBytes(Number(size))
+            }
+            case CompressionMethod.ZLIB: {
+                const fullData = new Uint8Array(Number(sizeDecompressed))
+                console.log(compressionBlocks)
+                console.log(blockSize)
+
+                for (const [i, block] of compressionBlocks.entries()) {
+                    console.log(`reading block ${i} ${block.start} ${block.size}`)
+                    await this.reader.seek(this.offset + block.start)
+                    const blockData = await this.reader.getBytes(Number(block.size))
+                    console.log(blockData)
+
+                    fullData.set(unzlib(blockData), i * blockSize)
+                }
+
+                return fullData
+            }
+            default:
+                throw "Unimplemented compression method " + compressionMethod
+        }
+    }
 }
 
 export class PakFile {
